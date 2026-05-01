@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.build/
+dist/
+build/
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+
+# Data and outputs
+runs/
+logs/
+*.pt
+*.onnx
+*.engine
+
+# Datasets and caches
+/data/
+/RDD2022/
+/cache/
+**/blackhat_cache/
+**/blackhat/
+**/blackhat_blur/
+
+# Experiments
+outputs/
+results/
+
+# Temporary
+*.tmp
+*.log
