@@ -4,7 +4,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch
 from ultralytics import YOLO
+from ultralytics.models.yolo.detect.train import DetectionTrainer
 
 
 def upgrade_first_conv(model, in_channels: int = 4):
@@ -54,6 +56,9 @@ def upgrade_first_conv(model, in_channels: int = 4):
 def patch_load_image(blackhat_root: Path, kernel_size: int):
     import ultralytics.data.base as udb
 
+    if getattr(udb.BaseDataset.load_image, "_is_4ch", False):
+        return
+
     original_load = udb.BaseDataset.load_image
 
     def load_image_4ch(self, i, rect_mode=True):
@@ -74,29 +79,48 @@ def patch_load_image(blackhat_root: Path, kernel_size: int):
         im4 = np.dstack([im, bh])
         return im4, (h0, w0), (h, w)
 
+    load_image_4ch._is_4ch = True
     udb.BaseDataset.load_image = load_image_4ch
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("configs/rdd2022_4ch.yaml"))
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch", type=int, default=8)
-    parser.add_argument("--imgsz", type=int, default=512)
+    parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", type=str, default="0")
-    parser.add_argument("--project", type=str, default="runs/rdd2022")
-    parser.add_argument("--name", type=str, default="blackhat_4ch_k17")
-    parser.add_argument("--blackhat-root", type=Path, default=Path("data/rdd2022_yolo/blackhat"))
+    parser.add_argument("--project", type=str, default="runs/rdd2022_full")
+    parser.add_argument("--name", type=str, default="blackhat_4ch_k17_blur_full_e40")
+    parser.add_argument("--blackhat-root", type=Path, default=Path("data/rdd2022_yolo/blackhat_blur"))
     parser.add_argument("--kernel-size", type=int, default=17)
+    parser.add_argument("--weights", type=Path, default=Path("yolov8s.pt"))
     args = parser.parse_args()
 
     patch_load_image(args.blackhat_root, args.kernel_size)
 
-    model = YOLO("yolov8s.pt")
+    # Start from the pretrained RGB model, then expand its input layer.  The
+    # RGB filters are retained and the morphology filter is initialized from
+    # their luminance-weighted average.
+    model = YOLO(str(args.weights))
     upgrade_first_conv(model.model)
+    # Ensure trainer uses the prepared 4-channel model.
+    model.model.yaml["ch"] = 4
+    model.model.args["ch"] = 4
 
-    # Keep augmentations minimal to avoid 3-channel assumptions.
+    first_conv = model.model.model[0].conv
+    print(f"first_conv.in_channels={first_conv.in_channels}")
+
+    class FourChannelTrainer(DetectionTrainer):
+        def get_model(self, cfg=None, weights=None, verbose=True):
+            return model.model
+
+    # workers=0 is CRITICAL: keeps train+val dataloaders in the main process
+    # so the load_image monkey-patch stays active during validation.
+    # Multiprocessing workers spawn fresh processes that don't inherit the patch,
+    # causing "expected 4 channels, got 3" during val.
     model.train(
+        trainer=FourChannelTrainer,
         data=str(args.data),
         epochs=args.epochs,
         batch=args.batch,
@@ -104,6 +128,8 @@ def main():
         device=args.device,
         project=args.project,
         name=args.name,
+        workers=0,       # <-- KEY FIX: patch survives in main process only
+        exist_ok=True,   # allow rerun without renaming
         mosaic=0.0,
         mixup=0.0,
         hsv_h=0.0,

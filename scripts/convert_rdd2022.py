@@ -78,27 +78,13 @@ def create_split(items, seed, train_ratio, val_ratio):
     return train_items, val_items, test_items
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-root", type=Path, required=True,
-                        help="Path to RDD2022 China_Drone/train")
-    parser.add_argument("--output-root", type=Path, default=Path("data/rdd2022_yolo"))
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--train-ratio", type=float, default=0.8)
-    parser.add_argument("--val-ratio", type=float, default=0.1)
-    parser.add_argument("--debug-count", type=int, default=100)
-    args = parser.parse_args()
-
-    images_dir = args.input_root / "images"
-    xml_dir = args.input_root / "annotations" / "xmls"
+def collect_items(input_root: Path, label_tmp: Path, prefix: str | None):
+    images_dir = input_root / "images"
+    xml_dir = input_root / "annotations" / "xmls"
 
     xml_files = sorted(xml_dir.glob("*.xml"))
     if not xml_files:
         raise SystemExit(f"No XML files found in {xml_dir}")
-
-    output_root = args.output_root
-    images_out = output_root / "images"
-    labels_out = output_root / "labels"
 
     parsed = []
     for xml_path in xml_files:
@@ -109,25 +95,66 @@ def main():
         if not image_path.exists():
             continue
 
-        label_path = labels_out / "tmp" / (image_path.stem + ".txt")
+        if prefix:
+            new_stem = f"{prefix}_{image_path.stem}"
+            new_name = f"{new_stem}{image_path.suffix}"
+        else:
+            new_stem = image_path.stem
+            new_name = image_path.name
+
+        label_path = label_tmp / (new_stem + ".txt")
         label_path.parent.mkdir(parents=True, exist_ok=True)
         write_labels(label_path, objects, width, height)
-        parsed.append((image_path, label_path))
+        parsed.append((image_path, label_path, new_name, new_stem))
+
+    return parsed
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="One or more RDD2022 subset train dirs (e.g., China_Drone/train)",
+    )
+    parser.add_argument("--output-root", type=Path, default=Path("data/rdd2022_yolo"))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-ratio", type=float, default=0.8)
+    parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument("--debug-count", type=int, default=100)
+    parser.add_argument(
+        "--no-prefix",
+        action="store_true",
+        help="Do not prefix filenames with subset name",
+    )
+    args = parser.parse_args()
+
+    output_root = args.output_root
+    images_out = output_root / "images"
+    labels_out = output_root / "labels"
+
+    parsed = []
+    label_tmp = labels_out / "tmp"
+    for input_root in args.input_root:
+        prefix = None if args.no_prefix else input_root.parent.name
+        parsed.extend(collect_items(input_root, label_tmp, prefix))
 
     train_items, val_items, test_items = create_split(
         parsed, args.seed, args.train_ratio, args.val_ratio
     )
 
     for split, items in [("train", train_items), ("val", val_items), ("test", test_items)]:
-        for image_path, label_path in items:
-            out_img = images_out / split / image_path.name
-            out_lbl = labels_out / split / label_path.name
+        for image_path, label_path, new_name, new_stem in items:
+            out_img = images_out / split / new_name
+            out_lbl = labels_out / split / (new_stem + ".txt")
             copy_pair(image_path, label_path, out_img, out_lbl)
 
     debug_items = train_items[:max(0, args.debug_count)]
-    for image_path, label_path in debug_items:
-        out_img = images_out / "debug" / image_path.name
-        out_lbl = labels_out / "debug" / label_path.name
+    for image_path, label_path, new_name, new_stem in debug_items:
+        out_img = images_out / "debug" / new_name
+        out_lbl = labels_out / "debug" / (new_stem + ".txt")
         copy_pair(image_path, label_path, out_img, out_lbl)
 
     # Cleanup temp labels

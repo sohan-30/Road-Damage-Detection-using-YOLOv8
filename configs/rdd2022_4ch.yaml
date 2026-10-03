@@ -3,6 +3,8 @@ train: images/train
 val: images/val
 test: images/test
 
+channels: 4
+
 names:
   0: D00
   1: D10
